@@ -1,54 +1,40 @@
-
-"""
-Core functionality for fetching and filtering PubMed papers.
-"""
-
 import re
 import time
 import logging
 import csv
 import io
+import concurrent.futures
 from typing import Dict, List, Optional, Any
-
-import requests
 from Bio import Entrez, Medline
 
 # Configure logger
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(name)s - %(levelname)s - %(message)s')
 logger = logging.getLogger('pubmed_pharma_paper_finder')
 
-# Common pharmaceutical/biotech companies and terms for matching
+# Regex for identifying pharmaceutical/biotech company affiliations
 PHARMA_BIOTECH_TERMS = [
     r'pfizer', r'novartis', r'roche', r'merck', r'johnson\s*&\s*johnson', r'j\s*&\s*j',
     r'sanofi', r'glaxosmithkline', r'gsk', r'abbvie', r'amgen', r'gilead', r'astrazeneca',
     r'eli\s*lilly', r'lilly', r'bristol\s*myers\s*squibb', r'bms', r'boehringer\s*ingelheim',
-    
-    # Biotech companies
     r'genentech', r'biogen', r'regeneron', r'moderna', r'biontech', r'vertex', r'illumina',
     r'alexion', r'biomarin', r'seagen', r'incyte', r'alnylam', r'exact\s*sciences',
-    
-    # Generic company identifiers
     r'inc\.', r'llc', r'ltd\.', r'corp\.', r'corporation', r'pharmaceuticals', r'pharma',
     r'therapeutics', r'biotech', r'biosciences', r'biopharmaceuticals', r'biotherapeutics',
     r'laboratories', r'labs'
 ]
 COMBINED_PATTERN = re.compile('|'.join(PHARMA_BIOTECH_TERMS), re.IGNORECASE)
 
-# List of academic/research terms to exclude
 ACADEMIC_TERMS = [
-    "university", "college", "school of", "faculty of", "research center", 
-    "institute of", "department of", "hospital", "medical center"
+    "university", "college", "school of", "faculty of", "research center",
+    "institute of", "department of", "hospital", "medical center", "unit", "laboratory"
 ]
 
+EMAIL_PATTERN = re.compile(
+    r'[a-zA-Z0-9._%+-]+@[a-zA-Z0-9.-]+\.[a-zA-Z]{2,}', re.IGNORECASE
+)
+
 class PubMedPaperFinder:
-    """
-    Class to fetch and filter PubMed papers based on company affiliations.
-    """
-    
     def __init__(self, email: str, api_key: Optional[str] = None, debug: bool = False):
-        """
-        Initialize the PubMedPaperFinder.
-        """
         self.email = email
         self.api_key = api_key
         Entrez.email = email
@@ -57,184 +43,141 @@ class PubMedPaperFinder:
         if debug:
             logger.setLevel(logging.DEBUG)
         logger.debug("PubMedPaperFinder initialized with email: %s", email)
-    
+
     def search_papers(self, query: str, max_results: int = 100) -> List[str]:
-        """
-        Search PubMed for papers matching the query.
-        """
         try:
             search_handle = Entrez.esearch(db="pubmed", term=query, retmax=max_results, usehistory="y")
             search_results = Entrez.read(search_handle)
             search_handle.close()
-            return search_results.get("IdList", [])
+            id_list = search_results.get("IdList", [])
+            logger.debug(f"Retrieved {len(id_list)} articles from PubMed")
+            return id_list
         except Exception as e:
             logger.error(f"Error searching PubMed: {e}")
             return []
-    
+
     def fetch_paper_details(self, id_list: List[str]) -> List[Dict[str, Any]]:
-        """
-        Fetch detailed information for a list of PubMed IDs.
-        """
         if not id_list:
             return []
         
-        try:
-            batch_size = 100
-            all_papers = []
-            for i in range(0, len(id_list), batch_size):
-                time.sleep(1)  # Avoid hitting API rate limits
-                fetch_handle = Entrez.efetch(db="pubmed", id=",".join(id_list[i:i+batch_size]), rettype="medline", retmode="text")
-                all_papers.extend(list(Medline.parse(fetch_handle)))
-                fetch_handle.close()
-            return all_papers
-        except Exception as e:
-            logger.error(f"Error fetching paper details: {e}")
+        def fetch_batch(batch, max_retries=5):
+            attempt = 0
+            while attempt < max_retries:
+                try:
+                    time.sleep(1 + (0.5 * attempt))  # Exponential backoff
+                    fetch_handle = Entrez.efetch(db="pubmed", id=",".join(batch), rettype="medline", retmode="text")
+                    papers = list(Medline.parse(fetch_handle))
+                    fetch_handle.close()
+                    return papers
+                except Exception as e:
+                    if "429" in str(e):  # Too many requests error
+                        wait_time = 2 ** attempt
+                        logger.warning(f"Rate limited (429). Retrying in {wait_time} seconds...")
+                        time.sleep(wait_time)
+                        attempt += 1
+                    else:
+                        logger.error(f"Error fetching batch details: {e}")
+                        break
             return []
-    
-   
+        
+        all_papers = []
+        batch_size = 100  # Fetch 100 articles per batch
+        with concurrent.futures.ThreadPoolExecutor(max_workers=5) as executor:
+            future_to_batch = {executor.submit(fetch_batch, id_list[i:i+batch_size]): i for i in range(0, len(id_list), batch_size)}
+            for future in concurrent.futures.as_completed(future_to_batch):
+                all_papers.extend(future.result())
+
+        return all_papers
+
 
     def is_affiliated_with_company(self, affiliation: str) -> bool:
-        """
-        Check if an affiliation string belongs to a pharmaceutical/biotech company.
-        """
         return bool(COMBINED_PATTERN.search(affiliation)) and not self.is_academic_affiliation(affiliation)
 
     def is_academic_affiliation(self, affiliation: str) -> bool:
-        """
-        Check if an affiliation is an academic or research institution.
-        """
-        ACADEMIC_TERMS = [
-            "university", "college", "school of", "faculty of", "research center", 
-            "institute of", "department of", "hospital", "medical center", "unit", "laboratory"
-        ]
         return any(term in affiliation.lower() for term in ACADEMIC_TERMS)
 
-
-    
-
-    def extract_company_names(self, affiliation: str) -> List[str]:
-        """
-        Extract company names from an affiliation string, ensuring correct formatting.
-        """
-        companies = []
-        for part in re.split(r'[,;]', affiliation):
-            part = part.strip()
-            if self.is_affiliated_with_company(part):
-                # Remove extra words like 'Inc.', 'LLC', etc. from the start
-                cleaned_part = re.sub(r'^(Inc\.|LLC|Ltd\.|Corp\.)\s*', '', part, flags=re.IGNORECASE)
-                companies.append(cleaned_part)
-
-        return companies
-
-
-    def extract_email_from_paper(self, paper: Dict[str, Any]) -> Optional[str]:
-        """
-        Extract the corresponding author's email from various fields.
-        
-        This improved version:
-        1. Searches all available fields in the paper
-        2. Uses a more comprehensive regex for email detection
-        3. Handles both direct string values and nested lists/dictionaries
-        """
-        # More comprehensive email regex
-        email_pattern = r'(?:[a-zA-Z0-9!#$%&\'*+/=?^_`{|}~-]+(?:\.[a-zA-Z0-9!#$%&\'*+/=?^_`{|}~-]+)*)@(?:[a-zA-Z0-9](?:[a-zA-Z0-9-]*[a-zA-Z0-9])?\.)+[a-zA-Z]{2,}'
-
-        
-        # Function to recursively search for emails in any data structure
-        def search_for_email(data):
+    def extract_email(self, paper: Dict[str, Any]) -> Optional[str]:
+        def search_email(data):
             if isinstance(data, str):
-                # Search directly in string
-                email_match = re.search(email_pattern, data)
-                if email_match:
-                    return email_match.group(0)
+                match = EMAIL_PATTERN.search(data)
+                return match.group(0) if match else None
             elif isinstance(data, list):
-                # Search in each list item
                 for item in data:
-                    result = search_for_email(item)
+                    result = search_email(item)
                     if result:
                         return result
             elif isinstance(data, dict):
-                # Search in each dictionary value
                 for value in data.values():
-                    result = search_for_email(value)
+                    result = search_email(value)
                     if result:
                         return result
             return None
-        
-        # Search all fields in the paper
-        for field, value in paper.items():
-            email = search_for_email(value)
-            if email:
-                return email
-        
-        # If email is present in a specially formatted field like 'corresponding_email'
-        if 'corresponding_email' in paper:
-            return paper['corresponding_email'] if paper['corresponding_email'] else None
-            
-        return None
-    
+        return search_email(paper)
+
 
     def filter_company_affiliated_papers(self, papers: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
-        """
-        Filter papers to include only those with at least one author affiliated with a company.
-        """
         filtered_papers = []
 
         for paper in papers:
-            authors = paper.get('AU', [])  # List of author names
-            author_affiliations = paper.get('AD', [])  # List of affiliations
-            company_authors = []
-            company_affiliations = []
+            pubmed_id = paper.get("PMID", "")
+            title = paper.get("TI", "Unknown Title")
+            publication_date = paper.get("DP", "Unknown Date")
 
-            if not authors or not author_affiliations:
-                continue  # Skip if no authors or affiliations available
+            # Extract authors safely
+            authors = paper.get("AU", paper.get("FAU", []))  # AU is preferred, FAU as fallback
+            authors = authors if isinstance(authors, list) else []
+            if not authors:
+                logger.warning(f"Missing authors for PubMed ID {pubmed_id}")
 
-            # Match authors to affiliations using positional mapping
+            # Extract affiliations safely
+            affiliations = paper.get("AD", [])
+            affiliations = affiliations if isinstance(affiliations, list) else []
+
+            # Log extracted authors and affiliations for debugging
+            # logger.debug(f"PubMed ID {pubmed_id} - Extracted Authors: {authors}")
+            # logger.debug(f"PubMed ID {pubmed_id} - Extracted Affiliations: {affiliations}")
+
+            # Map authors to affiliations if possible
             author_affiliation_map = {}
-            for i in range(min(len(authors), len(author_affiliations))):
-                author_affiliation_map[authors[i]] = author_affiliations[i]
+            for i in range(min(len(authors), len(affiliations))):
+                author_affiliation_map[authors[i]] = affiliations[i]
 
-            # Identify authors affiliated with companies
-            for author, affiliation in author_affiliation_map.items():
-                if self.is_affiliated_with_company(affiliation):
-                    company_authors.append(author)
-                    company_affiliations.extend(self.extract_company_names(affiliation))
+            # Identify company-affiliated authors
+            company_authors = [
+                author for author, aff in author_affiliation_map.items()
+                if self.is_affiliated_with_company(aff)
+            ]
+            company_affiliations = list(set(aff for aff in affiliations if self.is_affiliated_with_company(aff)))
 
-            # Extract corresponding author email
-            email = self.extract_email_from_paper(paper)
+            # Fix: If authors exist but affiliations don't, still include authors
+            if company_authors:
+                non_academic_authors = ", ".join(company_authors)
+            else:
+                non_academic_authors = ", ".join(authors) if authors else "Unknown"  # Always include known authors
 
-            # Only save if company-affiliated authors exist
+            # Store paper data
             if company_affiliations:
                 filtered_papers.append({
-                    'pubmed_id': paper.get('PMID', ''),
-                    'title': paper.get('TI', ''),
-                    'publication_date': paper.get('DP', ''),
-                    'non_academic_authors': list(set(company_authors)),  # Remove duplicates
-                    'company_affiliations': list(set(company_affiliations)),  # Remove duplicates
-                    'corresponding_email': email
+                    "pubmed_id": pubmed_id,
+                    "title": title,
+                    "publication_date": publication_date,
+                    "non_academic_authors": non_academic_authors,  # Fix: Always store authors
+                    "company_affiliations": company_affiliations if company_affiliations else ["Unknown"],
+                    "corresponding_email": self.extract_email(paper),
                 })
 
-        logger.info(f"Filtered to {len(filtered_papers)} papers with company affiliations")
         return filtered_papers
 
-
     def run_query(self, query: str, max_results: int = 100) -> List[Dict[str, Any]]:
-        """
-        Run a complete query pipeline: search, fetch details, and filter.
-        """
         logger.info(f"Running query: {query}")
         id_list = self.search_papers(query, max_results)
         papers = self.fetch_paper_details(id_list)
         return self.filter_company_affiliated_papers(papers) if papers else []
 
     def save_to_csv(self, papers: List[Dict[str, Any]], filename: Optional[str] = None) -> Optional[str]:
-        """
-        Save the filtered papers to a CSV file or return as a string.
-        """
         if not papers:
-            logger.warning("No papers to save")
             return None
-
+        logger.info(f"Saving {len(papers)} papers to {filename}")
         fieldnames = ['pubmed_id', 'title', 'publication_date', 'non_academic_authors', 'company_affiliations', 'corresponding_email']
         formatted_papers = [{k: '; '.join(v) if isinstance(v, list) else v for k, v in paper.items()} for paper in papers]
 
@@ -243,13 +186,10 @@ class PubMedPaperFinder:
                 writer = csv.DictWriter(csv_file, fieldnames=fieldnames)
                 writer.writeheader()
                 writer.writerows(formatted_papers)
-            logger.info(f"Results saved to {filename}")
-            return None
+            logger.info(f"CSV file {filename} saved successfully")
         else:
             output = io.StringIO()
             writer = csv.DictWriter(output, fieldnames=fieldnames)
             writer.writeheader()
             writer.writerows(formatted_papers)
             return output.getvalue()
-
-
