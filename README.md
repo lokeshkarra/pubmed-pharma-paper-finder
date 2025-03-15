@@ -43,17 +43,17 @@ pubmed-pharma-paper-finder/
 
 ```bash
 # Clone the repository
-git clone https://github.com/yourusername/pubmed-pharma-paper-finder.git
+git clone https://github.com/lokeshkarra/pubmed-pharma-paper-finder.git
 cd pubmed-pharma-paper-finder
 
 # Install with Poetry
 poetry install
 ```
 
-### Install from Test PyPI (if available)
+### Install from Test PyPI
 
 ```bash
-pip install --index-url https://test.pypi.org/simple/ pubmed-pharma-paper-finder
+pip install -i https://test.pypi.org/simple/ pubmed-pharma-paper-finder
 ```
 
 ## Usage
@@ -109,7 +109,6 @@ for paper in papers:
 ## External Dependencies
 
 - [Biopython](https://biopython.org/): For interacting with NCBI APIs
-- [Requests](https://requests.readthedocs.io/): HTTP library for API requests
 - [Poetry](https://python-poetry.org/): For dependency management and packaging
 
 ## Testing
@@ -120,7 +119,7 @@ poetry run pytest
 
 ## License
 
-This project is licensed under the MIT License - see the LICENSE file for details.
+This project is licensed under the Apache License - see the LICENSE file for details.
 
 ## Development
 
@@ -137,3 +136,4 @@ cd pubmed-pharma-paper-finder
 poetry install
 
 
+```
