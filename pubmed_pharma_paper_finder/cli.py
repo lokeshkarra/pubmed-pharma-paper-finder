@@ -4,7 +4,7 @@ Command-line interface for the PubMed Pharma Paper Finder.
 
 import sys
 import argparse
-import logging
+
 
 from .core import PubMedPaperFinder
 
