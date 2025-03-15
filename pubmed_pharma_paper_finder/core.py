@@ -1,3 +1,7 @@
+"""
+Core functionality for fetching and filtering PubMed papers.
+"""
+
 import re
 import time
 import logging
