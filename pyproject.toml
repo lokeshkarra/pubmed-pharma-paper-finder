@@ -4,7 +4,7 @@ version = "0.1.0"
 description = "A tool to find PubMed papers with authors affiliated to pharmaceutical companies"
 authors = ["Lokeshwar Reddy Karra <lokeshwarreddy.karra@egmail.com>"]
 readme = "README.md"
-repository = "https://github.com/yourusername/pubmed-pharma-paper-finder"
+repository = "https://github.com/lokeshkarra/pubmed-pharma-paper-finder"
 packages = [{include = "pubmed_pharma_paper_finder"}]
 
 [tool.poetry.dependencies]
