@@ -27,6 +27,7 @@ pubmed-pharma-paper-finder/
 │   ├── core.py            # Core functionality module
 │   └── cli.py             # Command-line interface
 ├── tests/                 # Test suite
+│   └── test_mock.py       # Unit and integration tests
 ├── pyproject.toml         # Poetry configuration
 ├── README.md              # Documentation
 └── LICENSE                # License information
@@ -53,8 +54,11 @@ poetry install
 ### Install from Test PyPI
 
 ```bash
+pip install biopython==1.85
 pip install -i https://test.pypi.org/simple/ pubmed-pharma-paper-finder
 ```
+
+‼️ Note: Requires Python 3.12+ and biopython>=1.85 ‼️
 
 ## Usage
 
